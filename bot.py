@@ -40,17 +40,36 @@ SMART_ALIASES = {
 HISTORY_FILE = "trade_history.json"
 
 # ==========================================
-# دالة جلب البيانات المباشرة (تتخطى الحظر)
+# دالة جلب البيانات المتعددة (مضادة للحظر)
 # ==========================================
 def get_stock_data(ticker_symbol):
-    """جلب مباشر لبيانات السهم لتفادي حظر السيرفرات ومشاكل yfinance"""
+    """جلب بيانات السهم بدمج Stooq API لتفادي حظر خوادم GitHub Actions"""
     ticker_symbol = ticker_symbol.upper().strip()
     
-    # محاولة 1: طلب مباشر لـ Yahoo API بـ User-Agent متصفح
+    # 1. محاولة Stooq API (لا يحظر السيرفرات السحابية)
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker_symbol}?range=6mo&interval=1d"
+        stooq_symbol = ticker_symbol.lower()
+        if stooq_symbol.endswith(".sr"):
+            stooq_symbol = stooq_symbol.replace(".sr", ".sa")
+        elif not stooq_symbol.endswith(".sa") and "." not in stooq_symbol:
+            stooq_symbol = f"{stooq_symbol}.us"
+            
+        stooq_url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
+        df = pd.read_csv(stooq_url)
+        if not df.empty and 'Close' in df.columns and len(df) >= 20:
+            df['Date'] = pd.to_datetime(df['Date'])
+            df = df.sort_values('Date').set_index('Date')
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
+            if len(df) >= 20:
+                return df
+    except Exception:
+        pass
+
+    # 2. محاولة Yahoo Finance Chart API (كخيار ثانٍ)
+    try:
+        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker_symbol}?range=6mo&interval=1d"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         }
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -74,7 +93,7 @@ def get_stock_data(ticker_symbol):
     except Exception:
         pass
 
-    # محاولة 2: مكتبة yfinance كخيار احتياطي
+    # 3. محاولة yfinance كخيار احتياطي أخير
     try:
         df = yf.download(ticker_symbol, period="6mo", progress=False, auto_adjust=True)
         if df is not None and not df.empty and len(df) >= 20:
@@ -127,8 +146,8 @@ def evaluate_and_adapt():
             if df.empty or len(df) < 2:
                 continue
                 
-            max_high = float(df['High'].max())
-            min_low = float(df['Low'].min())
+            max_high = float(df['High'].squeeze().max())
+            min_low = float(df['Low'].squeeze().min())
             
             if max_high >= trade["tp"]:
                 trade["status"] = "win"
@@ -201,10 +220,13 @@ def send_telegram_photo(photo_path, caption):
 
 def generate_stock_chart(df, ticker_symbol, stop_loss, take_profit):
     try:
+        close_s = df['Close'].squeeze()
+        ma20_s = df['MA20'].squeeze() if 'MA20' in df.columns else None
+
         plt.figure(figsize=(10, 5))
-        plt.plot(df.index, df['Close'], label='Close Price', color='#1f77b4', linewidth=2)
-        if 'MA20' in df.columns:
-            plt.plot(df.index, df['MA20'], label='MA20', color='#ff7f0e', linestyle='--', alpha=0.8)
+        plt.plot(df.index, close_s, label='Close Price', color='#1f77b4', linewidth=2)
+        if ma20_s is not None:
+            plt.plot(df.index, ma20_s, label='MA20', color='#ff7f0e', linestyle='--', alpha=0.8)
         plt.axhline(y=stop_loss, color='red', linestyle=':', label=f'Stop Loss ({stop_loss:.2f})')
         plt.axhline(y=take_profit, color='green', linestyle=':', label=f'Take Profit ({take_profit:.2f})')
         
@@ -224,8 +246,9 @@ def check_market_sentiment(is_saudi=False):
         market_ticker = "^TASI.SR" if is_saudi else "SPY"
         df = get_stock_data(market_ticker)
         if not df.empty:
-            ma20 = df['Close'].rolling(20).mean().iloc[-1]
-            current_price = df['Close'].iloc[-1]
+            close_s = df['Close'].squeeze()
+            ma20 = close_s.rolling(20).mean().iloc[-1]
+            current_price = close_s.iloc[-1]
             return "🟢 صاعد (إيجابي)" if current_price >= ma20 else "🔴 هابط (حذر مطلوب)"
     except Exception:
         pass
@@ -253,22 +276,32 @@ def analyze_single_ticker(ticker_symbol):
         if df.empty or len(df) < 20:
             return f"⚠️ <b>تعذر جلب بيانات كافية للسهم:</b> <code>\u200e{ticker_symbol}</code>", None, None
 
-        close_price = float(df['Close'].iloc[-1])
-        
-        df['Vol_Mean'] = df['Volume'].rolling(20).mean()
-        df['Vol_Std'] = df['Volume'].rolling(20).std()
-        df['Z_Score'] = (df['Volume'] - df['Vol_Mean']) / df['Vol_Std']
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-        df['High-Low'] = df['High'] - df['Low']
-        df['High-Close'] = np.abs(df['High'] - df['Close'].shift(1))
-        df['Low-Close'] = np.abs(df['Low'] - df['Close'].shift(1))
-        df['ATR'] = df[['High-Low', 'High-Close', 'Low-Close']].max(axis=1).ewm(span=14, adjust=False).mean()
-        df['MA20'] = df['Close'].rolling(20).mean()
+        close_series = df['Close'].squeeze()
+        high_series = df['High'].squeeze()
+        low_series = df['Low'].squeeze()
+        vol_series = df['Volume'].squeeze()
+
+        close_price = float(close_series.iloc[-1])
+        
+        vol_mean = vol_series.rolling(20).mean()
+        vol_std = vol_series.rolling(20).std()
+        df['Z_Score'] = (vol_series - vol_mean) / vol_std
+
+        high_low = high_series - low_series
+        high_close = np.abs(high_series - close_series.shift(1))
+        low_close = np.abs(low_series - close_series.shift(1))
+        
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = tr.ewm(span=14, adjust=False).mean()
+        df['MA20'] = close_series.rolling(20).mean()
 
         latest_z = float(df['Z_Score'].iloc[-1]) if not np.isnan(df['Z_Score'].iloc[-1]) else 0.0
         latest_atr = float(df['ATR'].iloc[-1]) if not np.isnan(df['ATR'].iloc[-1]) else (close_price * 0.02)
         
-        recent_low = float(df['Low'].tail(20).min())
+        recent_low = float(low_series.tail(20).min())
         atr_stop = close_price - (latest_atr * 2.0)
         stop_loss = min(recent_low, atr_stop)
         take_profit = close_price + ((close_price - stop_loss) * 2.0)
@@ -371,9 +404,9 @@ def run_realtime_scanner():
                 if df.empty or len(df) < 20:
                     continue
 
-                vol_series = df['Volume']
-                close_series = df['Close']
-                open_series = df['Open']
+                vol_series = df['Volume'].squeeze()
+                close_series = df['Close'].squeeze()
+                open_series = df['Open'].squeeze()
 
                 vol_mean = vol_series.rolling(20).mean()
                 vol_std = vol_series.rolling(20).std()
