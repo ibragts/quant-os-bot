@@ -4,7 +4,6 @@ import time
 import json
 import requests
 import datetime
-import threading
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -20,7 +19,7 @@ plt.rcParams['axes.unicode_minus'] = False
 # ==========================================
 # إعدادات النظام والبوت وإدارة المخاطر
 # ==========================================
-TELEGRAM_TOKEN = "8649936966:AAEFSbOMQp-1DahaJUJYGm9rAubfkJ9uWfw"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8649936966:AAEFSbOMQp-1DahaJUJYGm9rAubfkJ9uWfw")
 TELEGRAM_CHAT_ID = "901311116"
 
 PORTFOLIO_CAPITAL = 100000
@@ -39,17 +38,16 @@ SMART_ALIASES = {
 }
 
 HISTORY_FILE = "trade_history.json"
-alerted_cache = {}
 
 # ==========================================
-# دوال التخزين والتعلم الآلي المبسط
+# دوال التخزين والتعلم الآلي والتقييم الذاتي
 # ==========================================
 def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except:
+        except Exception:
             pass
     return {"trades": [], "z_threshold": 2.5, "last_eval_date": ""}
 
@@ -65,7 +63,7 @@ def evaluate_and_adapt():
         return history.get("z_threshold", 2.5) # تم التقييم اليوم مسبقاً
         
     trades = history.get("trades", [])
-    pending_trades = [t for t in trades if t["status"] == "pending"]
+    pending_trades = [t for t in trades if t.get("status") == "pending"]
     
     if not pending_trades:
         return history.get("z_threshold", 2.5)
@@ -102,12 +100,11 @@ def evaluate_and_adapt():
         current_threshold = history.get("z_threshold", 2.5)
         
         # التكيف الذاتي (Self-Correction)
-        old_threshold = current_threshold
         if win_rate < 50.0:
-            current_threshold = min(4.0, current_threshold + 0.1) # كن أكثر صرامة
+            current_threshold = min(4.0, current_threshold + 0.1) # أكثر صرامة
             adapt_msg = "الرصد أصبح أكثر صرامة وحذراً 🛡️"
         elif win_rate > 65.0:
-            current_threshold = max(2.0, current_threshold - 0.1) # اقتنص فرص أكثر
+            current_threshold = max(2.0, current_threshold - 0.1) # مرونة أكبر
             adapt_msg = "الرصد أصبح مرناً لاقتناص فرص أكثر 🏹"
         else:
             adapt_msg = "تم الحفاظ على مستوى الرصد الحالي ⚖️"
@@ -139,7 +136,7 @@ def send_telegram_message(message):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
         requests.post(url, json=payload, timeout=10)
-    except:
+    except Exception:
         pass
 
 def send_telegram_photo(photo_path, caption):
@@ -148,7 +145,7 @@ def send_telegram_photo(photo_path, caption):
         with open(photo_path, 'rb') as photo:
             payload = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "parse_mode": "HTML"}
             requests.post(url, data=payload, files={"photo": photo}, timeout=15)
-    except:
+    except Exception:
         pass
 
 def generate_stock_chart(df, ticker_symbol, stop_loss, take_profit):
@@ -168,7 +165,7 @@ def generate_stock_chart(df, ticker_symbol, stop_loss, take_profit):
         plt.savefig(chart_path, dpi=150)
         plt.close()
         return chart_path
-    except:
+    except Exception:
         return None
 
 def check_market_sentiment(is_saudi=False):
@@ -180,7 +177,7 @@ def check_market_sentiment(is_saudi=False):
             ma20 = df['Close'].rolling(20).mean().iloc[-1]
             current_price = df['Close'].iloc[-1]
             return "🟢 صاعد (إيجابي)" if current_price >= ma20 else "🔴 هابط (حذر مطلوب)"
-    except:
+    except Exception:
         pass
     return "⚪ مستقر"
 
@@ -248,33 +245,33 @@ def analyze_single_ticker(ticker_symbol):
         return f"⚠️ خطأ أثناء تحليل <code>{ticker_symbol}</code>: {e}", None, None
 
 def run_realtime_scanner():
-    global alerted_cache
     today_str = datetime.datetime.now().strftime("%Y-%m-%d")
     
-    # 1. تحديث التقييم الذاتي أولاً
+    # 1. تنفيذ التقييم الذاتي وتحديد معامل السيولة المطلوبة
     current_z_threshold = evaluate_and_adapt()
     
-    if "current_date" not in alerted_cache or alerted_cache["current_date"] != today_str:
-        alerted_cache = {"current_date": today_str}
-
-    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🔍 فحص السوق (الحد المطلوب للسيولة Z-Score: {current_z_threshold})...")
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🔍 بدء فحص السوق (معامل السيولة المطلوبة Z-Score: {current_z_threshold})...")
 
     history = load_history()
+    # جلب الصفقات المسجلة اليوم لتفادي التكرار
+    today_tickers = [t["ticker"] for t in history.get("trades", []) if t.get("date") == today_str]
 
     for sector_name, tickers in SECTORS_WATCHLIST.items():
         for ticker in tickers:
-            if ticker in alerted_cache: continue
+            if ticker in today_tickers:
+                continue
             try:
                 tk = yf.Ticker(ticker)
                 df = tk.history(period="1mo")
-                if df.empty or len(df) < 20: continue
+                if df.empty or len(df) < 20:
+                    continue
                 
                 df['Vol_Mean'] = df['Volume'].rolling(20).mean()
                 df['Vol_Std'] = df['Volume'].rolling(20).std()
                 latest = df.iloc[-1]
                 z_score = float((latest['Volume'] - latest['Vol_Mean']) / latest['Vol_Std'])
                 
-                # استخدام معامل السيولة الديناميكي الجديد
+                # فحص الشرط بمعامل السيولة الديناميكي
                 if z_score >= current_z_threshold and latest['Close'] >= latest['Open']:
                     msg, chart_path, trade_data = analyze_single_ticker(ticker)
                     if chart_path:
@@ -287,45 +284,13 @@ def run_realtime_scanner():
                     if trade_data:
                         history["trades"].append(trade_data)
                         save_history(history)
-                        
-                    alerted_cache[ticker] = True
-                    time.sleep(3)
-            except:
+                        today_tickers.append(ticker)
+                    
+                    time.sleep(2)
+            except Exception:
                 pass
 
-def background_scheduler():
-    while True:
-        run_realtime_scanner()
-        time.sleep(900) # فحص كل 15 دقيقة
-
-def listen_for_commands():
-    print("🤖 نظام التنبيهات الفورية Quant OS V2.0 يعمل مع التقييم الذاتي...")
-    offset = 0
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=30"
-            response = requests.get(url, timeout=35)
-            if response.status_code == 200:
-                for update in response.json().get("result", []):
-                    offset = update["update_id"] + 1
-                    text = update.get("message", {}).get("text", "").strip()
-                    chat_id = str(update.get("message", {}).get("chat", {}).get("id", ""))
-                    
-                    if chat_id == TELEGRAM_CHAT_ID and text:
-                        if text.lower() in ["/scan", "فحص"]:
-                            send_telegram_message("⏳ <b>جاري ফحص السوق وتقييم الأداء...</b>")
-                            run_realtime_scanner()
-                        else:
-                            msg, chart_path, _ = analyze_single_ticker(text)
-                            if chart_path:
-                                send_telegram_photo(chart_path, msg)
-                                os.remove(chart_path)
-                            else:
-                                send_telegram_message(msg)
-        except:
-            time.sleep(5)
-        time.sleep(2)
-
 if __name__ == "__main__":
-    threading.Thread(target=background_scheduler, daemon=True).start()
-    listen_for_commands()
+    print("🚀 بدء تنفيذ دورة الفحص والتقييم الذاتي لـ Quant OS V2.0...")
+    run_realtime_scanner()
+    print("✅ اكتمل الفحص والتقييم بنجاح. إنهاء الجلسة لتوفير الموارد.")
