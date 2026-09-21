@@ -2,8 +2,12 @@ name: Quant OS V2.0 Runner
 
 on:
   schedule:
-    - cron: '0 * * * *'  # يعمل تلقائياً كل ساعة
-  workflow_dispatch:      # يتيح لك تشغيله يدوياً متى ما أردت
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: bot-runner
+  cancel-in-progress: true
 
 jobs:
   run-bot:
@@ -19,11 +23,20 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance requests matplotlib
 
       - name: Run Quant Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           python bot.py
+
+      - name: Commit and Push Self-Evaluation History
+        if: always()
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action Bot"
+          git add trade_history.json || true
+          git commit -m "Auto-update trade evaluation history [skip ci]" || true
+          git push
