@@ -6,7 +6,7 @@
             "entry": 741.2449951171875,
             "tp": 1131.135009765625,
             "sl": 546.2999877929688,
-            "status": "pending"
+            "status": "loss"
         },
         {
             "ticker": "AMD",
@@ -14,9 +14,9 @@
             "entry": 615.52001953125,
             "tp": 965.56005859375,
             "sl": 440.5,
-            "status": "pending"
+            "status": "loss"
         }
     ],
-    "z_threshold": 2.5,
-    "last_eval_date": ""
+    "z_threshold": 2.6,
+    "last_eval_date": "2026-09-21"
 }
