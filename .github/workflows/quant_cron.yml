@@ -42,4 +42,5 @@ jobs:
           git config --local user.name "GitHub Action Bot"
           git add trade_history.json || true
           git commit -m "Auto-update trade evaluation history [skip ci]" || true
+          git pull --rebase origin main || true
           git push
