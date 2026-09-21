@@ -109,7 +109,8 @@ def check_market_sentiment(is_saudi=False):
     try:
         market_ticker = "^TASI.SR" if is_saudi else "SPY"
         tk = yf.Ticker(market_ticker)
-        df = tk.history(period="1.5mo")
+        # تم تصحيح الفترة لتكون '1mo' لكي تقبلها مكتبة yfinance بشكل صحيح
+        df = tk.history(period="1mo")
         if not df.empty:
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
@@ -273,7 +274,7 @@ def listen_for_commands():
                             run_realtime_scanner()
                             send_telegram_message("✅ <b>تم الانتهاء من الفحص اليدوي.</b>")
                         elif text_lower in ["/start"]:
-                            send_telegram_message("🤖 <b>مرحباً بك في نظام التنبيهات الفورية Quant OS V2.0</b>\n\n• النظام يراقب السوق تلقائياً ويرسل تنبيهات الشارت والسيولة فور حدوثها.")
+                            send_telegram_message("🤖 <b>مرحباً بك في نظام التنبيهات الفورية Quant OS V2.0</b>\n\n• النظام يراقب السوق تلقائياً ويرسل تنبيهات الشارت والشسيولة فور حدوثها.")
                         else:
                             send_telegram_message(f"⏳ <b>جاري التحليل الفوري وتوليد الشارت للسهم: {text.upper()}...</b>")
                             msg, chart_path = analyze_single_ticker(text)
