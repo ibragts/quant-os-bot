@@ -9,7 +9,7 @@ import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
 
-# إصلاح مشكلة ترميز النصوص العربية
+# إصلاح ترميز النصوص العربية
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
 
@@ -19,7 +19,7 @@ plt.rcParams['axes.unicode_minus'] = False
 # ==========================================
 # إعدادات النظام والبوت وإدارة المخاطر
 # ==========================================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8649936966:AAEFSbOMQp-1DahaJUJYGm9rAubfkJ9uWfw")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = "901311116"
 
 PORTFOLIO_CAPITAL = 100000
@@ -76,13 +76,12 @@ def evaluate_and_adapt():
     
     for trade in pending_trades:
         try:
-            tk = yf.Ticker(trade["ticker"])
-            df = tk.history(start=trade["date"])
+            df = get_stock_data(trade["ticker"])
             if df.empty or len(df) < 2:
                 continue
                 
-            max_high = df['High'].max()
-            min_low = df['Low'].min()
+            max_high = float(df['High'].max())
+            min_low = float(df['Low'].min())
             
             if max_high >= trade["tp"]:
                 trade["status"] = "win"
@@ -132,21 +131,27 @@ def evaluate_and_adapt():
 # دوال التليجرام والشارتات
 # ==========================================
 def send_telegram_message(message):
+    if not TELEGRAM_TOKEN:
+        print("⚠️ TELEGRAM_BOT_TOKEN غير معرّف!")
+        return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
         requests.post(url, json=payload, timeout=10)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"خطأ في إرسال رسالة تليجرام: {e}")
 
 def send_telegram_photo(photo_path, caption):
+    if not TELEGRAM_TOKEN:
+        print("⚠️ TELEGRAM_BOT_TOKEN غير معرّف!")
+        return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
         with open(photo_path, 'rb') as photo:
             payload = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "parse_mode": "HTML"}
             requests.post(url, data=payload, files={"photo": photo}, timeout=15)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"خطأ في إرسال الصورة لتليجرام: {e}")
 
 def generate_stock_chart(df, ticker_symbol, stop_loss, take_profit):
     try:
@@ -171,8 +176,7 @@ def generate_stock_chart(df, ticker_symbol, stop_loss, take_profit):
 def check_market_sentiment(is_saudi=False):
     try:
         market_ticker = "^TASI.SR" if is_saudi else "SPY"
-        tk = yf.Ticker(market_ticker)
-        df = tk.history(period="1mo")
+        df = get_stock_data(market_ticker)
         if not df.empty:
             ma20 = df['Close'].rolling(20).mean().iloc[-1]
             current_price = df['Close'].iloc[-1]
@@ -187,16 +191,46 @@ def calculate_position_sizing(close_price, stop_loss):
     shares = int((PORTFOLIO_CAPITAL * RISK_PER_TRADE_PCT) / risk_per_share)
     return shares, shares * close_price
 
-def analyze_single_ticker(ticker_symbol):
-    ticker_symbol = ticker_symbol.upper().strip()
-    if ticker_symbol in SMART_ALIASES: ticker_symbol = SMART_ALIASES[ticker_symbol]
-    if ticker_symbol.isdigit(): ticker_symbol = f"{ticker_symbol}.SR"
-
+# ==========================================
+# دالة جلب البيانات الذكية المتعددة
+# ==========================================
+def get_stock_data(ticker_symbol):
+    """دالة ذكية لجلب بيانات السهم وتفادي حظر Yahoo Finance"""
+    # محاولة 1: جلب عبر التيكر المباشر
     try:
         tk = yf.Ticker(ticker_symbol)
-        df = tk.history(period="3mo")
+        df = tk.history(period="6mo", auto_adjust=True)
+        if not df.empty and len(df) >= 20:
+            return df
+    except Exception:
+        pass
+
+    # محاولة 2: جلب عبر التنزيل المباشر yf.download
+    try:
+        df = yf.download(ticker_symbol, period="6mo", progress=False, auto_adjust=True)
+        if not df.empty and len(df) >= 20:
+            return df
+    except Exception:
+        pass
+
+    return pd.DataFrame()
+
+def analyze_single_ticker(ticker_symbol):
+    ticker_symbol = str(ticker_symbol).upper().strip()
+    if ticker_symbol in SMART_ALIASES: 
+        ticker_symbol = SMART_ALIASES[ticker_symbol]
+    if ticker_symbol.isdigit(): 
+        ticker_symbol = f"{ticker_symbol}.SR"
+
+    try:
+        df = get_stock_data(ticker_symbol)
+
         if df.empty or len(df) < 20:
-            return f"⚠️ <b>تعذر جلب البيانات لـ:</b> <code>{ticker_symbol}</code>", None, None
+            return f"⚠️ <b>تعذر جلب بيانات كافية للسهم:</b> <code>\u200e{ticker_symbol}</code>", None, None
+
+        # تفكيك الأعمدة المركبة MultiIndex إن وجدت في التحديثات الجديدة
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
         close_price = float(df['Close'].iloc[-1])
         df['Vol_Mean'] = df['Volume'].rolling(20).mean()
@@ -232,7 +266,7 @@ def analyze_single_ticker(ticker_symbol):
         msg = (
             f"🚨 <b>تنبيه سيولة فوري | Quant OS V2.0</b>\n"
             f"───────────────────\n"
-            f"📌 <b>السهم:</b> <code>{ticker_symbol}</code>\n"
+            f"📌 <b>السهم:</b> <code>\u200e{ticker_symbol}</code>\n"
             f"💰 <b>السعر:</b> {currency} {close_price:.2f}\n"
             f"📊 <b>(Z-Score):</b> {z_score:.2f}\n"
             f"🛑 <b>وقف الخسارة:</b> {currency} {stop_loss:.2f}\n"
@@ -242,7 +276,7 @@ def analyze_single_ticker(ticker_symbol):
         )
         return msg, chart_path, trade_data
     except Exception as e:
-        return f"⚠️ خطأ أثناء تحليل <code>{ticker_symbol}</code>: {e}", None, None
+        return f"⚠️ خطأ أثناء تحليل <code>\u200e{ticker_symbol}</code>: {e}", None, None
 
 def run_realtime_scanner():
     today_str = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -261,11 +295,13 @@ def run_realtime_scanner():
             if ticker in today_tickers:
                 continue
             try:
-                tk = yf.Ticker(ticker)
-                df = tk.history(period="1mo")
+                df = get_stock_data(ticker)
                 if df.empty or len(df) < 20:
                     continue
                 
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+
                 df['Vol_Mean'] = df['Volume'].rolling(20).mean()
                 df['Vol_Std'] = df['Volume'].rolling(20).std()
                 latest = df.iloc[-1]
