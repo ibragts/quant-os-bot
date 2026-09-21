@@ -9,7 +9,7 @@ import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
 
-# إصلاح ترميز النصوص العربية
+# إصلاح ترميز النصوص العربية عند التشغيل
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
 
@@ -40,6 +40,33 @@ SMART_ALIASES = {
 HISTORY_FILE = "trade_history.json"
 
 # ==========================================
+# دالة جلب البيانات المحسّنة (مقاومة للتعارضات)
+# ==========================================
+def get_stock_data(ticker_symbol):
+    """دالة معالجة واستخراج البيانات المتوافقة مع أحدث تحديثات yfinance"""
+    for period in ["6mo", "3mo", "1y"]:
+        try:
+            df = yf.download(ticker_symbol, period=period, progress=False, auto_adjust=True)
+            if df is not None and not df.empty and len(df) >= 20:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                return df
+        except Exception:
+            pass
+
+        try:
+            tk = yf.Ticker(ticker_symbol)
+            df = tk.history(period=period, auto_adjust=True)
+            if df is not None and not df.empty and len(df) >= 20:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                return df
+        except Exception:
+            pass
+
+    return pd.DataFrame()
+
+# ==========================================
 # دوال التخزين والتعلم الآلي والتقييم الذاتي
 # ==========================================
 def load_history():
@@ -60,7 +87,7 @@ def evaluate_and_adapt():
     today_str = datetime.datetime.now().strftime("%Y-%m-%d")
     
     if history.get("last_eval_date") == today_str:
-        return history.get("z_threshold", 2.5) # تم التقييم اليوم مسبقاً
+        return history.get("z_threshold", 2.5)
         
     trades = history.get("trades", [])
     pending_trades = [t for t in trades if t.get("status") == "pending"]
@@ -80,8 +107,8 @@ def evaluate_and_adapt():
             if df.empty or len(df) < 2:
                 continue
                 
-            max_high = float(df['High'].max())
-            min_low = float(df['Low'].min())
+            max_high = float(df['High'].squeeze().max())
+            min_low = float(df['Low'].squeeze().min())
             
             if max_high >= trade["tp"]:
                 trade["status"] = "win"
@@ -100,10 +127,10 @@ def evaluate_and_adapt():
         
         # التكيف الذاتي (Self-Correction)
         if win_rate < 50.0:
-            current_threshold = min(4.0, current_threshold + 0.1) # أكثر صرامة
+            current_threshold = min(4.0, current_threshold + 0.1)
             adapt_msg = "الرصد أصبح أكثر صرامة وحذراً 🛡️"
         elif win_rate > 65.0:
-            current_threshold = max(2.0, current_threshold - 0.1) # مرونة أكبر
+            current_threshold = max(2.0, current_threshold - 0.1)
             adapt_msg = "الرصد أصبح مرناً لاقتناص فرص أكثر 🏹"
         else:
             adapt_msg = "تم الحفاظ على مستوى الرصد الحالي ⚖️"
@@ -128,7 +155,7 @@ def evaluate_and_adapt():
     return history.get("z_threshold", 2.5)
 
 # ==========================================
-# دوال التليجرام والشارتات
+# دوال التواصل والشارتات
 # ==========================================
 def send_telegram_message(message):
     if not TELEGRAM_TOKEN:
@@ -155,10 +182,13 @@ def send_telegram_photo(photo_path, caption):
 
 def generate_stock_chart(df, ticker_symbol, stop_loss, take_profit):
     try:
+        close_s = df['Close'].squeeze()
+        ma20_s = df['MA20'].squeeze() if 'MA20' in df.columns else None
+
         plt.figure(figsize=(10, 5))
-        plt.plot(df.index, df['Close'], label='Close Price', color='#1f77b4', linewidth=2)
-        if 'MA20' in df.columns:
-            plt.plot(df.index, df['MA20'], label='MA20', color='#ff7f0e', linestyle='--', alpha=0.8)
+        plt.plot(df.index, close_s, label='Close Price', color='#1f77b4', linewidth=2)
+        if ma20_s is not None:
+            plt.plot(df.index, ma20_s, label='MA20', color='#ff7f0e', linestyle='--', alpha=0.8)
         plt.axhline(y=stop_loss, color='red', linestyle=':', label=f'Stop Loss ({stop_loss:.2f})')
         plt.axhline(y=take_profit, color='green', linestyle=':', label=f'Take Profit ({take_profit:.2f})')
         
@@ -178,8 +208,9 @@ def check_market_sentiment(is_saudi=False):
         market_ticker = "^TASI.SR" if is_saudi else "SPY"
         df = get_stock_data(market_ticker)
         if not df.empty:
-            ma20 = df['Close'].rolling(20).mean().iloc[-1]
-            current_price = df['Close'].iloc[-1]
+            close_s = df['Close'].squeeze()
+            ma20 = close_s.rolling(20).mean().iloc[-1]
+            current_price = close_s.iloc[-1]
             return "🟢 صاعد (إيجابي)" if current_price >= ma20 else "🔴 هابط (حذر مطلوب)"
     except Exception:
         pass
@@ -192,29 +223,8 @@ def calculate_position_sizing(close_price, stop_loss):
     return shares, shares * close_price
 
 # ==========================================
-# دالة جلب البيانات الذكية المتعددة
+# دالة تحليل سهم منفرد والرد التفاعلي
 # ==========================================
-def get_stock_data(ticker_symbol):
-    """دالة ذكية لجلب بيانات السهم وتفادي حظر Yahoo Finance"""
-    # محاولة 1: جلب عبر التيكر المباشر
-    try:
-        tk = yf.Ticker(ticker_symbol)
-        df = tk.history(period="6mo", auto_adjust=True)
-        if not df.empty and len(df) >= 20:
-            return df
-    except Exception:
-        pass
-
-    # محاولة 2: جلب عبر التنزيل المباشر yf.download
-    try:
-        df = yf.download(ticker_symbol, period="6mo", progress=False, auto_adjust=True)
-        if not df.empty and len(df) >= 20:
-            return df
-    except Exception:
-        pass
-
-    return pd.DataFrame()
-
 def analyze_single_ticker(ticker_symbol):
     ticker_symbol = str(ticker_symbol).upper().strip()
     if ticker_symbol in SMART_ALIASES: 
@@ -228,27 +238,33 @@ def analyze_single_ticker(ticker_symbol):
         if df.empty or len(df) < 20:
             return f"⚠️ <b>تعذر جلب بيانات كافية للسهم:</b> <code>\u200e{ticker_symbol}</code>", None, None
 
-        # تفكيك الأعمدة المركبة MultiIndex إن وجدت في التحديثات الجديدة
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        close_price = float(df['Close'].iloc[-1])
-        df['Vol_Mean'] = df['Volume'].rolling(20).mean()
-        df['Vol_Std'] = df['Volume'].rolling(20).std()
-        df['Z_Score'] = (df['Volume'] - df['Vol_Mean']) / df['Vol_Std']
+        close_series = df['Close'].squeeze()
+        high_series = df['High'].squeeze()
+        low_series = df['Low'].squeeze()
+        vol_series = df['Volume'].squeeze()
 
-        df['High-Low'] = df['High'] - df['Low']
-        df['High-Close'] = np.abs(df['High'] - df['Close'].shift(1))
-        df['Low-Close'] = np.abs(df['Low'] - df['Close'].shift(1))
-        df['ATR'] = df[['High-Low', 'High-Close', 'Low-Close']].max(axis=1).ewm(span=14, adjust=False).mean()
-        df['MA20'] = df['Close'].rolling(20).mean()
-
-        latest = df.iloc[-1]
-        z_score = float(latest['Z_Score']) if not np.isnan(latest['Z_Score']) else 0.0
-        atr = float(latest['ATR']) if not np.isnan(latest['ATR']) else (close_price * 0.02)
+        close_price = float(close_series.iloc[-1])
         
-        recent_low = float(df['Low'].tail(20).min())
-        atr_stop = close_price - (atr * 2.0)
+        vol_mean = vol_series.rolling(20).mean()
+        vol_std = vol_series.rolling(20).std()
+        df['Z_Score'] = (vol_series - vol_mean) / vol_std
+
+        high_low = high_series - low_series
+        high_close = np.abs(high_series - close_series.shift(1))
+        low_close = np.abs(low_series - close_series.shift(1))
+        
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = tr.ewm(span=14, adjust=False).mean()
+        df['MA20'] = close_series.rolling(20).mean()
+
+        latest_z = float(df['Z_Score'].iloc[-1]) if not np.isnan(df['Z_Score'].iloc[-1]) else 0.0
+        latest_atr = float(df['ATR'].iloc[-1]) if not np.isnan(df['ATR'].iloc[-1]) else (close_price * 0.02)
+        
+        recent_low = float(low_series.tail(20).min())
+        atr_stop = close_price - (latest_atr * 2.0)
         stop_loss = min(recent_low, atr_stop)
         take_profit = close_price + ((close_price - stop_loss) * 2.0)
         
@@ -268,7 +284,7 @@ def analyze_single_ticker(ticker_symbol):
             f"───────────────────\n"
             f"📌 <b>السهم:</b> <code>\u200e{ticker_symbol}</code>\n"
             f"💰 <b>السعر:</b> {currency} {close_price:.2f}\n"
-            f"📊 <b>(Z-Score):</b> {z_score:.2f}\n"
+            f"📊 <b>(Z-Score):</b> {latest_z:.2f}\n"
             f"🛑 <b>وقف الخسارة:</b> {currency} {stop_loss:.2f}\n"
             f"🎯 <b>الهدف (1:2):</b> {currency} {take_profit:.2f}\n"
             f"⚖️ <b>الكمية المقترحة:</b> {shares} سهم\n"
@@ -278,16 +294,67 @@ def analyze_single_ticker(ticker_symbol):
     except Exception as e:
         return f"⚠️ خطأ أثناء تحليل <code>\u200e{ticker_symbol}</code>: {e}", None, None
 
+# ==========================================
+# دالة معالجة الأوامر الواردة من تيليجرام
+# ==========================================
+def process_telegram_updates():
+    if not TELEGRAM_TOKEN:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+        resp = requests.get(url, timeout=10).json()
+        if not resp.get("ok"):
+            return
+            
+        results = resp.get("result", [])
+        if not results:
+            return
+
+        last_update_id = 0
+        for update in results:
+            update_id = update["update_id"]
+            if update_id > last_update_id:
+                last_update_id = update_id
+
+            message = update.get("message", {})
+            text = message.get("text", "").strip()
+            chat_id = str(message.get("chat", {}).get("id", ""))
+
+            if chat_id != str(TELEGRAM_CHAT_ID) and TELEGRAM_CHAT_ID != "":
+                continue
+
+            if not text:
+                continue
+
+            if text in ["/start", "فحص"]:
+                send_telegram_message("✅ تم الانتهاء من الفحص اليدوي.")
+            elif len(text) <= 12 and not text.startswith("/"):
+                symbol = text.upper()
+                send_telegram_message(f"⏳ جاري التحليل الفوري وتوليد الشارت للسهم: {symbol}...")
+                msg, chart_path, _ = analyze_single_ticker(symbol)
+                if chart_path:
+                    send_telegram_photo(chart_path, msg)
+                    if os.path.exists(chart_path):
+                        os.remove(chart_path)
+                else:
+                    send_telegram_message(msg)
+
+        if last_update_id > 0:
+            requests.get(f"{url}?offset={last_update_id + 1}", timeout=5)
+
+    except Exception as e:
+        print(f"خطأ أثناء معالجة رسائل تليجرام: {e}")
+
+# ==========================================
+# دالة الفحص الدوري الشامل للسوق
+# ==========================================
 def run_realtime_scanner():
     today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    
-    # 1. تنفيذ التقييم الذاتي وتحديد معامل السيولة المطلوبة
     current_z_threshold = evaluate_and_adapt()
     
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🔍 بدء فحص السوق (معامل السيولة المطلوبة Z-Score: {current_z_threshold})...")
 
     history = load_history()
-    # جلب الصفقات المسجلة اليوم لتفادي التكرار
     today_tickers = [t["ticker"] for t in history.get("trades", []) if t.get("date") == today_str]
 
     for sector_name, tickers in SECTORS_WATCHLIST.items():
@@ -302,21 +369,27 @@ def run_realtime_scanner():
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
 
-                df['Vol_Mean'] = df['Volume'].rolling(20).mean()
-                df['Vol_Std'] = df['Volume'].rolling(20).std()
-                latest = df.iloc[-1]
-                z_score = float((latest['Volume'] - latest['Vol_Mean']) / latest['Vol_Std'])
+                vol_series = df['Volume'].squeeze()
+                close_series = df['Close'].squeeze()
+                open_series = df['Open'].squeeze()
+
+                vol_mean = vol_series.rolling(20).mean()
+                vol_std = vol_series.rolling(20).std()
+                z_series = (vol_series - vol_mean) / vol_std
+
+                z_score = float(z_series.iloc[-1])
+                last_close = float(close_series.iloc[-1])
+                last_open = float(open_series.iloc[-1])
                 
-                # فحص الشرط بمعامل السيولة الديناميكي
-                if z_score >= current_z_threshold and latest['Close'] >= latest['Open']:
+                if z_score >= current_z_threshold and last_close >= last_open:
                     msg, chart_path, trade_data = analyze_single_ticker(ticker)
                     if chart_path:
                         send_telegram_photo(chart_path, msg)
-                        os.remove(chart_path)
+                        if os.path.exists(chart_path):
+                            os.remove(chart_path)
                     else:
                         send_telegram_message(msg)
                     
-                    # حفظ الصفقة لتقييمها لاحقاً
                     if trade_data:
                         history["trades"].append(trade_data)
                         save_history(history)
@@ -328,5 +401,6 @@ def run_realtime_scanner():
 
 if __name__ == "__main__":
     print("🚀 بدء تنفيذ دورة الفحص والتقييم الذاتي لـ Quant OS V2.0...")
+    process_telegram_updates()
     run_realtime_scanner()
     print("✅ اكتمل الفحص والتقييم بنجاح. إنهاء الجلسة لتوفير الموارد.")
