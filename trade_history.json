@@ -1,0 +1,22 @@
+{
+    "trades": [
+        {
+            "ticker": "META",
+            "date": "2026-09-21",
+            "entry": 741.2449951171875,
+            "tp": 1131.135009765625,
+            "sl": 546.2999877929688,
+            "status": "pending"
+        },
+        {
+            "ticker": "AMD",
+            "date": "2026-09-21",
+            "entry": 615.52001953125,
+            "tp": 965.56005859375,
+            "sl": 440.5,
+            "status": "pending"
+        }
+    ],
+    "z_threshold": 2.5,
+    "last_eval_date": ""
+}
