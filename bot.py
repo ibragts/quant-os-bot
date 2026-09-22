@@ -2,9 +2,11 @@ import os
 import sys
 import io
 import time
+import random
 import pickle
 import logging
 import sqlite3
+import threading
 import datetime
 import requests
 import numpy as np
@@ -206,50 +208,92 @@ def get_training_rows():
     return rows
 
 # ==========================================
-# أدوات الشبكة: إعادة محاولة تلقائية عند الفشل
+# أدوات الشبكة: إعادة محاولة تلقائية عند الفشل مع احترام حظر Yahoo (429)
 # ==========================================
-def http_get(url, retries=2, timeout=10, **kwargs):
+def http_get(url, retries=3, timeout=12, **kwargs):
     last_err = None
     for attempt in range(retries + 1):
         try:
-            return SESSION.get(url, timeout=timeout, **kwargs)
+            resp = SESSION.get(url, timeout=timeout, **kwargs)
+            if resp.status_code == 429:
+                # احترام رأس Retry-After لو موجود، وإلا انتظار تصاعدي أطول
+                wait = resp.headers.get("Retry-After")
+                wait = float(wait) if wait and wait.isdigit() else (2.5 * (attempt + 1))
+                log.debug(f"429 Too Many Requests من {url} — انتظار {wait:.1f} ثانية")
+                if attempt < retries:
+                    time.sleep(wait)
+                    continue
+            return resp
         except requests.exceptions.RequestException as e:
             last_err = e
             if attempt < retries:
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(1.5 * (attempt + 1) + random.uniform(0, 0.5))
     log.debug(f"فشلت كل محاولات الاتصال بـ {url}: {last_err}")
     return None
+
+# ==========================================
+# مصادقة Yahoo Finance (cookie + crumb)
+# منذ 2023-2024 توقفت Yahoo عن قبول الطلبات بدون "crumb" مصادقة
+# مرتبط بجلسة كوكيز صحيحة، وإلا يرجع 401/429. هذا يصلح ذلك ويخزّن
+# الـ crumb لمدة ساعة بدل طلبه بكل مرة (يقلل فرصة الحظر).
+# ==========================================
+_yahoo_lock = threading.Lock()
+_yahoo_cache = {"crumb": None, "ts": 0}
+
+def get_yahoo_crumb():
+    with _yahoo_lock:
+        now = time.time()
+        if _yahoo_cache["crumb"] and (now - _yahoo_cache["ts"] < 3600):
+            return _yahoo_cache["crumb"]
+        try:
+            SESSION.get("https://fc.yahoo.com", timeout=10)  # تأسيس كوكيز الجلسة
+            resp = SESSION.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+            if resp is not None and resp.status_code == 200:
+                crumb = resp.text.strip()
+                if crumb and len(crumb) < 40 and "Too Many" not in crumb:
+                    _yahoo_cache["crumb"] = crumb
+                    _yahoo_cache["ts"] = now
+                    return crumb
+        except Exception as e:
+            log.debug(f"تعذر جلب Yahoo crumb: {e}")
+        return None
 
 # ==========================================
 # جلب بيانات الأسهم (يعيد دائماً أعمدة مفرّدة المستوى)
 # ==========================================
 def get_stock_data(ticker_symbol):
     ticker_symbol = ticker_symbol.upper().strip()
+    is_saudi = ticker_symbol.endswith(".SR")
 
-    # 1. Stooq
+    # 1. Stooq — تغطيته للسوق السعودي غير موثوقة/غير مدعومة عملياً،
+    #    فنتجاوزه للأسهم السعودية ونذهب مباشرة لـ Yahoo لتوفير طلبات مهدورة
+    if not is_saudi:
+        try:
+            stooq_symbol = ticker_symbol.lower()
+            if not stooq_symbol.endswith(".sa") and "." not in stooq_symbol:
+                stooq_symbol = f"{stooq_symbol}.us"
+
+            stooq_url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
+            resp = http_get(stooq_url)
+            if resp is not None and resp.status_code == 200 and "Date" in resp.text:
+                df = pd.read_csv(io.StringIO(resp.text))
+                if not df.empty and 'Close' in df.columns and len(df) >= 20:
+                    df['Date'] = pd.to_datetime(df['Date'])
+                    df = df.sort_values('Date').set_index('Date')
+                    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
+                    if len(df) >= 20:
+                        return df
+        except Exception as e:
+            log.debug(f"Stooq فشل لـ {ticker_symbol}: {e}")
+
+    # 2. Yahoo Finance Query API v8 (مع مصادقة crumb + تأخير عشوائي بسيط
+    #    لتفادي إطلاق عدة طلبات بنفس اللحظة من كل الخيوط المتوازية معاً)
     try:
-        stooq_symbol = ticker_symbol.lower()
-        if stooq_symbol.endswith(".sr"):
-            stooq_symbol = stooq_symbol.replace(".sr", ".sa")
-        elif not stooq_symbol.endswith(".sa") and "." not in stooq_symbol:
-            stooq_symbol = f"{stooq_symbol}.us"
-
-        stooq_url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
-        resp = http_get(stooq_url)
-        if resp is not None and resp.status_code == 200 and "Date" in resp.text:
-            df = pd.read_csv(io.StringIO(resp.text))
-            if not df.empty and 'Close' in df.columns and len(df) >= 20:
-                df['Date'] = pd.to_datetime(df['Date'])
-                df = df.sort_values('Date').set_index('Date')
-                df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
-                if len(df) >= 20:
-                    return df
-    except Exception as e:
-        log.debug(f"Stooq فشل لـ {ticker_symbol}: {e}")
-
-    # 2. Yahoo Finance Query API v8
-    try:
+        time.sleep(random.uniform(0.2, 0.6))
+        crumb = get_yahoo_crumb()
         url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker_symbol}?range=6mo&interval=1d"
+        if crumb:
+            url += f"&crumb={crumb}"
         resp = http_get(url)
         if resp is not None and resp.status_code == 200:
             json_data = resp.json()
@@ -267,10 +311,13 @@ def get_stock_data(ticker_symbol):
                 df = df.dropna(subset=['Close'])
                 if not df.empty and len(df) >= 20:
                     return df
+        elif resp is not None and resp.status_code == 401:
+            # الـ crumb المخزّن صار غير صالح، نفرغ الكاش عشان يُعاد جلبه بالمحاولة القادمة
+            _yahoo_cache["crumb"] = None
     except Exception as e:
         log.debug(f"Yahoo فشل لـ {ticker_symbol}: {e}")
 
-    # 3. yfinance كخيار احتياطي أخير
+    # 3. yfinance كخيار احتياطي أخير (يدير المصادقة داخلياً بطريقته الخاصة)
     try:
         df = yf.download(ticker_symbol, period="6mo", progress=False, auto_adjust=True)
         if df is not None and not df.empty and len(df) >= 20:
@@ -280,12 +327,50 @@ def get_stock_data(ticker_symbol):
     except Exception as e:
         log.debug(f"yfinance فشل لـ {ticker_symbol}: {e}")
 
+    # 4. مصدر احتياطي مدفوع اختياري (Twelve Data) — يُستخدم فقط لو المستخدم
+    #    وفّر مفتاح TWELVEDATA_API_KEY؛ مفيد خصوصاً للسوق السعودي لأنه المصدر
+    #    الوحيد بين هذي القائمة اللي يدعم Tadawul رسمياً وبثبات
+    df = get_stock_data_twelvedata(ticker_symbol)
+    if not df.empty:
+        return df
+
+    return pd.DataFrame()
+
+def get_stock_data_twelvedata(ticker_symbol):
+    api_key = os.getenv("TWELVEDATA_API_KEY")
+    if not api_key:
+        return pd.DataFrame()
+    try:
+        if ticker_symbol.endswith(".SR"):
+            symbol = f"{ticker_symbol[:-3]}:XSAU"  # رمز Tadawul على Twelve Data (MIC: XSAU)
+        else:
+            symbol = ticker_symbol
+        url = "https://api.twelvedata.com/time_series"
+        params = {"symbol": symbol, "interval": "1day", "outputsize": 130, "apikey": api_key}
+        resp = SESSION.get(url, params=params, timeout=12)
+        data = resp.json()
+        values = data.get("values")
+        if not values:
+            log.debug(f"Twelve Data بدون بيانات لـ {symbol}: {data.get('message', data)}")
+            return pd.DataFrame()
+        df = pd.DataFrame(values)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.set_index("datetime").sort_index()
+        df = df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"})
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["Close"])
+        if len(df) >= 20:
+            return df[["Open", "High", "Low", "Close", "Volume"]]
+    except Exception as e:
+        log.debug(f"Twelve Data فشل لـ {ticker_symbol}: {e}")
     return pd.DataFrame()
 
 def fetch_all(tickers):
-    """جلب متوازٍ لعدة أسهم دفعة واحدة بدل التسلسل - يسرّع الفحص بشكل كبير."""
+    """جلب متوازٍ لعدة أسهم دفعة واحدة، بتزامن معتدل (4 خيوط) لتفادي إثارة
+    حظر Yahoo السريع عند الفحص الجماعي لعشرات الأسهم دفعة واحدة."""
     results = {}
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         future_map = {executor.submit(get_stock_data, t): t for t in tickers}
         for future in as_completed(future_map):
             t = future_map[future]
@@ -472,12 +557,31 @@ def resolve_ticker(raw_symbol):
         symbol = f"{symbol}.SR"
     return symbol
 
+def get_stock_data_persistent(ticker_symbol, attempts=3, delay=4):
+    """يستخدم فقط عند استعلام المستخدم اليدوي عن سهم معيّن: يعيد المحاولة
+    عدة مرات مع انتظار بينها، لأن طلب مستخدم واحد يتحمّل ثوانٍ إضافية
+    مقابل ضمان أعلى للنجاح، على عكس الفحص الجماعي لعشرات الأسهم."""
+    for i in range(attempts):
+        df = get_stock_data(ticker_symbol)
+        if not df.empty and len(df) >= 20:
+            return df
+        if i < attempts - 1:
+            log.debug(f"محاولة {i+1} فشلت لـ {ticker_symbol}، إعادة المحاولة بعد {delay} ثانية...")
+            time.sleep(delay)
+    return pd.DataFrame()
+
 def generate_signal(raw_symbol, sector=None, auto_open=False, prefetched_df=None):
     ticker_symbol = resolve_ticker(raw_symbol)
     sector_label = sector or "استعلام يدوي"
 
     try:
-        df = prefetched_df if prefetched_df is not None else get_stock_data(ticker_symbol)
+        if prefetched_df is not None:
+            df = prefetched_df
+        elif not auto_open:
+            # استعلام يدوي من المستخدم -> نمنحه أعلى فرصة نجاح ممكنة
+            df = get_stock_data_persistent(ticker_symbol)
+        else:
+            df = get_stock_data(ticker_symbol)
 
         if df is None or df.empty or len(df) < 20:
             return f"⚠️ <b>تعذر جلب بيانات كافية للسهم:</b> <code>\u200e{ticker_symbol}</code>", None, False
