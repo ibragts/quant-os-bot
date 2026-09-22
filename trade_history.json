@@ -22,7 +22,7 @@
             "entry": 71.79000091552734,
             "tp": 82.05117817228066,
             "sl": 66.65941228715069,
-            "status": "pending"
+            "status": "win"
         },
         {
             "ticker": "JPM",
@@ -30,7 +30,7 @@
             "entry": 349.6700134277344,
             "tp": 378.4063759309495,
             "sl": 335.3018321761268,
-            "status": "pending"
+            "status": "loss"
         },
         {
             "ticker": "MA",
@@ -38,7 +38,7 @@
             "entry": 565.239990234375,
             "tp": 597.6355991799592,
             "sl": 549.0421857615829,
-            "status": "pending"
+            "status": "win"
         },
         {
             "ticker": "AXP",
@@ -46,9 +46,9 @@
             "entry": 311.55999755859375,
             "tp": 336.6481815923398,
             "sl": 299.0159055417207,
-            "status": "pending"
+            "status": "win"
         }
     ],
-    "z_threshold": 2.6,
-    "last_eval_date": "2026-09-21"
+    "z_threshold": 2.5,
+    "last_eval_date": "2026-09-22"
 }
