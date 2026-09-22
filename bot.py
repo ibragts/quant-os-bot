@@ -497,7 +497,9 @@ def send_telegram_message(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-        SESSION.post(url, json=payload, timeout=10)
+        resp = SESSION.post(url, json=payload, timeout=10)
+        if resp.status_code != 200:
+            log.error(f"❌ فشل إرسال رسالة تليجرام (كود {resp.status_code}): {resp.text[:300]}")
     except Exception as e:
         log.error(f"خطأ في إرسال رسالة تليجرام: {e}")
 
@@ -906,17 +908,24 @@ def run_realtime_scanner():
 # ==========================================
 def process_telegram_updates():
     if not TELEGRAM_TOKEN:
+        log.warning("⚠️ TELEGRAM_BOT_TOKEN غير موجود بالبيئة — تأكد من إعداد الـ Secret بشكل صحيح.")
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
         resp = http_get(url)
         if resp is None:
+            log.error("❌ فشل الاتصال بـ Telegram getUpdates (لا يوجد رد من الخادم إطلاقاً).")
+            return
+        if resp.status_code != 200:
+            log.error(f"❌ Telegram رجع كود حالة {resp.status_code}: {resp.text[:300]}")
             return
         data = resp.json()
         if not data.get("ok"):
+            log.error(f"❌ Telegram API رجع خطأ (غالباً التوكن غير صحيح أو مُلغى): {data}")
             return
 
         results = data.get("result", [])
+        log.info(f"📩 عدد الرسائل الجديدة المستلمة من تيليجرام: {len(results)}")
         if not results:
             return
 
@@ -930,9 +939,11 @@ def process_telegram_updates():
             chat_id = str(message.get("chat", {}).get("id", ""))
 
             if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
+                log.warning(f"⏭️ تجاهلت رسالة من chat_id={chat_id} — لا تطابق TELEGRAM_CHAT_ID المُعرّف ({TELEGRAM_CHAT_ID})")
                 continue
             if not text:
                 continue
+            log.info(f"💬 معالجة رسالة: '{text}' من chat_id={chat_id}")
 
             if text in ["/start", "فحص"]:
                 send_telegram_message("⏳ جاري تنفيذ فحص السوق الآن...")
@@ -965,7 +976,7 @@ def process_telegram_updates():
         log.error(f"خطأ أثناء معالجة رسائل تليجرام: {e}")
 
 if __name__ == "__main__":
-    log.info("🚀 بدء تنفيذ دورة Quant OS V3.0 (ذكاء اصطناعي + إدارة مخاطر)...")
+    log.info("🚀 بدء تنفيذ دورة Quant OS V3.1 (ذكاء اصطناعي + إدارة مخاطر + تشخيص تيليجرام)...")
     try:
         get_db().close()  # يضمن إنشاء قاعدة البيانات والجداول قبل أي استخدام
         process_telegram_updates()
