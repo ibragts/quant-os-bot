@@ -1,48 +1,39 @@
-name: Quant OS V2.0 Runner
-
+name: Quant OS Bot
+ 
 on:
   schedule:
-    - cron: '*/15 * * * *'
-  workflow_dispatch:
-
-concurrency:
-  group: bot-runner
-  cancel-in-progress: true
-
-permissions:
-  contents: write
-
+    # كل 30 دقيقة أثناء تداخل ساعات سوق تداول والسوق الأمريكي (تقريبي بتوقيت UTC)
+    - cron: "*/30 6 * * 0-4"    # السوق السعودي (الأحد-الخميس تقريبًا)
+    - cron: "*/30 14-21 * * 1-5" # السوق الأمريكي (الاثنين-الجمعة تقريبًا)
+  workflow_dispatch: {}   # يسمح بتشغيل يدوي من تبويب Actions بالريبو
+ 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
+ 
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-
+          python-version: "3.11"
+ 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas numpy yfinance requests matplotlib
-
-      - name: Run Quant Bot
+        run: pip install -r requirements.txt
+ 
+      - name: Run Quant OS
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # اختياري: فعّل فقط لو صار عندك مفتاح Twelve Data مدفوع لاحقاً
+          # TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+        run: python quant_os_bot.py
+ 
+      - name: Commit updated database (يحفظ سجل الصفقات بين كل تشغيلة)
         run: |
-          python bot.py
-
-      - name: Commit and Push Self-Evaluation History
-        if: always()
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action Bot"
-          git add trade_history.json || true
-          git diff --staged --quiet || git commit -m "Auto-update trade evaluation history [skip ci]"
-          git pull --rebase origin main || true
-          git push origin main
+          git config user.name "quant-os-bot"
+          git config user.email "actions@github.com"
+          git add quant_os.db ml_model.pkl 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "تحديث بيانات البوت [skip ci]"
+          git push
