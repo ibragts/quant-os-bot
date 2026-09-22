@@ -1,27 +1,30 @@
 name: Quant OS Bot
- 
+
 on:
   schedule:
-    # كل 30 دقيقة أثناء تداخل ساعات سوق تداول والسوق الأمريكي (تقريبي بتوقيت UTC)
-    - cron: "*/30 6 * * 0-4"    # السوق السعودي (الأحد-الخميس تقريبًا)
-    - cron: "*/30 14-21 * * 1-5" # السوق الأمريكي (الاثنين-الجمعة تقريبًا)
+    # تغطية كامل ساعات تداول السوق السعودي 10:00ص-3:00م بتوقيت الرياض (UTC+3)
+    # = 07:00-12:00 UTC تقريباً، الأحد-الخميس
+    - cron: "0,30 7-12 * * 0-4"
+    # تغطية كامل ساعات تداول السوق الأمريكي 9:30ص-4:00م بتوقيت شرق أمريكا
+    # مع هامش أمان لتغيّر التوقيت الصيفي (13:00-21:00 UTC يغطي الحالتين)
+    - cron: "0,30 13-21 * * 1-5"
   workflow_dispatch: {}   # يسمح بتشغيل يدوي من تبويب Actions بالريبو
- 
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
- 
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
- 
+
       - name: Install dependencies
         run: pip install -r requirements.txt
- 
+
       - name: Run Quant OS
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -29,7 +32,7 @@ jobs:
           # اختياري: فعّل فقط لو صار عندك مفتاح Twelve Data مدفوع لاحقاً
           # TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
         run: python bot.py
- 
+
       - name: Commit updated database (يحفظ سجل الصفقات بين كل تشغيلة)
         run: |
           git config user.name "quant-os-bot"
@@ -37,4 +40,3 @@ jobs:
           git add quant_os.db ml_model.pkl 2>/dev/null || true
           git diff --staged --quiet || git commit -m "تحديث بيانات البوت [skip ci]"
           git push
- 
